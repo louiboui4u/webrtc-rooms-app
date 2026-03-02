@@ -97,8 +97,20 @@ async function joinRoom(roomId, password, roomName) {
         localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
     } catch (err) {
         console.error('Failed to get local stream', err);
-        alert('Could not access camera/microphone. Please ensure permissions are granted and you are using HTTPS or localhost.');
-        return;
+        
+        // Versuche Fallback: Nur Audio oder nur Video, falls eins von beiden fehlt
+        try {
+            console.log("Trying fallback to video only or audio only...");
+            localStream = await navigator.mediaDevices.getUserMedia({ video: true }).catch(() => null) 
+                          || await navigator.mediaDevices.getUserMedia({ audio: true }).catch(() => null);
+            
+            if (!localStream) throw new Error(err.message + " (Fallback also failed)");
+            
+            alert(`Warning: Could only access partial media. Some devices might be missing.\nOriginal error: ${err.name} - ${err.message}`);
+        } catch (fallbackErr) {
+            alert(`Could not access camera/microphone.\nError: ${err.name} - ${err.message}\nEnsure your devices are plugged in and not used by another app.`);
+            return;
+        }
     }
 
     socket.emit('join-room', { roomId, password }, (res) => {
