@@ -20,6 +20,32 @@ let currentRoomId = null;
 let pendingJoinRoomId = null;
 let currentUsername = localStorage.getItem('username') || '';
 
+// Settings
+const noisetorchToggle = document.getElementById('noisetorch-toggle');
+const isNoiseTorchEnabled = localStorage.getItem('noisetorch') === 'true';
+
+noisetorchToggle.checked = isNoiseTorchEnabled;
+if (isNoiseTorchEnabled) {
+    socket.emit('toggle-noisetorch', true, (res) => {
+        if (!res.success) console.error("Auto-load NoiseTorch failed:", res.message);
+    });
+}
+
+noisetorchToggle.addEventListener('change', (e) => {
+    const enable = e.target.checked;
+    noisetorchToggle.disabled = true; // Disable briefly to prevent spam
+    
+    socket.emit('toggle-noisetorch', enable, (res) => {
+        noisetorchToggle.disabled = false;
+        if (res.success) {
+            localStorage.setItem('noisetorch', enable);
+        } else {
+            alert('Failed to toggle NoiseTorch: ' + res.message);
+            noisetorchToggle.checked = !enable; // Revert switch
+        }
+    });
+});
+
 // Username Logic
 if (!currentUsername) {
     usernameModal.show();

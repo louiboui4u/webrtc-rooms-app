@@ -3,6 +3,7 @@ const path = require('path');
 const express = require('express');
 const http = require('http');
 const socketIo = require('socket.io');
+const { exec } = require('child_process');
 
 let mainWindow;
 
@@ -31,6 +32,22 @@ function startServerAndWindow() {
 
         socket.on('set-username', (username) => {
             users[socket.id] = username;
+        });
+
+        // --- NoiseTorch Integration ---
+        socket.on('toggle-noisetorch', (enable, callback) => {
+            if (process.platform !== 'linux') {
+                return callback({ success: false, message: 'NoiseTorch is only supported on Linux.' });
+            }
+
+            const command = enable ? 'noisetorch -i' : 'noisetorch -u';
+            exec(command, (error, stdout, stderr) => {
+                if (error) {
+                    console.error(`NoiseTorch Error: ${error.message}`);
+                    return callback({ success: false, message: error.message });
+                }
+                callback({ success: true });
+            });
         });
 
         socket.on('create-room', ({ name, password }, callback) => {
