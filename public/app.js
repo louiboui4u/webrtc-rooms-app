@@ -73,10 +73,17 @@ async function setupAudioProcessing(rawStream) {
             wasmBinary: rnnoiseWasmBinary,
             maxChannels: 1
         });
+        
+        // RNNoise outputs a single channel (mono). We use a ChannelMergerNode 
+        // to split this single channel back to both left and right ears (stereo).
+        const merger = audioContext.createChannelMerger(2);
+        rnnoise.connect(merger, 0, 0); // Connect mono to left
+        rnnoise.connect(merger, 0, 1); // Connect mono to right
+
         const destination = audioContext.createMediaStreamDestination();
 
         source.connect(rnnoise);
-        rnnoise.connect(destination);
+        merger.connect(destination);
 
         // Merge processed audio with raw video
         const processedAudioTracks = destination.stream.getAudioTracks();
