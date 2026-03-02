@@ -1,4 +1,4 @@
-const { app, BrowserWindow, session } = require('electron');
+const { app, BrowserWindow, session, desktopCapturer } = require('electron');
 const path = require('path');
 const express = require('express');
 const http = require('http');
@@ -97,7 +97,7 @@ function startServerAndWindow() {
             }
         });
 
-        // Wichtig: Kamera, Mikrofon und Bildschirm-Teilen automatisch erlauben
+        // Berechtigungen automatisch erteilen
         session.defaultSession.setPermissionRequestHandler((webContents, permission, callback) => {
             if (['media', 'display-capture'].includes(permission)) {
                 callback(true);
@@ -105,10 +105,31 @@ function startServerAndWindow() {
                 callback(false);
             }
         });
+        
+        session.defaultSession.setPermissionCheckHandler((webContents, permission) => {
+            if (['media', 'display-capture'].includes(permission)) {
+                return true;
+            }
+            return false;
+        });
 
-        mainWindow.loadURL(`http://127.0.0.1:${port}`);
+        // Automatische Quelle für Screenshare (ganzer Bildschirm) bereitstellen
+        session.defaultSession.setDisplayMediaRequestHandler((request, callback) => {
+            desktopCapturer.getSources({ types: ['screen'] }).then((sources) => {
+                // Den ersten gefundenen Bildschirm zurückgeben
+                callback({ video: sources[0], audio: 'loopback' });
+            }).catch(err => {
+                console.error('Error getting sources:', err);
+            });
+        });
+
+        // Localhost statt 127.0.0.1 nutzen, da Browser dies als sicheren Kontext behandeln (notwendig für getUserMedia)
+        mainWindow.loadURL(`http://localhost:${port}`);
     });
 }
+
+// Hardwarebeschleunigung für flüssiges WebRTC und Screen Capture
+app.commandLine.appendSwitch('enable-features', 'WebRTCPipeWireCapturer');
 
 app.whenReady().then(startServerAndWindow);
 
