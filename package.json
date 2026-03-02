@@ -32,7 +32,10 @@
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
+    "@sapphi-red/web-noise-suppressor": "^0.3.5",
+    "@shiguredo/rnnoise-wasm": "^2025.1.5",
     "express": "^5.2.1",
+    "purify-voice": "^1.0.9",
     "socket.io": "^4.8.3"
   },
   "devDependencies": {

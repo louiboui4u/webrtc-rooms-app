@@ -13,6 +13,7 @@ function startServerAndWindow() {
     const io = socketIo(server);
 
     expressApp.use(express.static(path.join(__dirname, 'public')));
+    expressApp.use('/node_modules', express.static(path.join(__dirname, 'node_modules')));
 
     // Räume speichern
     const rooms = {};
@@ -32,22 +33,6 @@ function startServerAndWindow() {
 
         socket.on('set-username', (username) => {
             users[socket.id] = username;
-        });
-
-        // --- NoiseTorch Integration ---
-        socket.on('toggle-noisetorch', (enable, callback) => {
-            if (process.platform !== 'linux') {
-                return callback({ success: false, message: 'NoiseTorch is only supported on Linux.' });
-            }
-
-            const command = enable ? 'noisetorch -i' : 'noisetorch -u';
-            exec(command, (error, stdout, stderr) => {
-                if (error) {
-                    console.error(`NoiseTorch Error: ${error.message}`);
-                    return callback({ success: false, message: error.message });
-                }
-                callback({ success: true });
-            });
         });
 
         socket.on('create-room', ({ name, password }, callback) => {

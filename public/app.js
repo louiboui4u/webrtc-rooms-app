@@ -1,3 +1,5 @@
+import { RnnoiseWorkletNode, loadRnnoise } from '@sapphi-red/web-noise-suppressor';
+
 const socket = io();
 
 // UI Elements
@@ -14,6 +16,9 @@ const usernameModal = new bootstrap.Modal(document.getElementById('usernameModal
 
 // State
 let localStream;
+let processedStream;
+let audioContext;
+let rnnoiseWasmBinary;
 let peers = {}; // socketId -> RTCPeerConnection
 let peerUsernames = {}; // socketId -> username
 let currentRoomId = null;
@@ -24,42 +29,65 @@ let currentUsername = localStorage.getItem('username') || '';
 const noisetorchToggle = document.getElementById('noisetorch-toggle');
 const isNoiseTorchEnabled = localStorage.getItem('noisetorch') === 'true';
 
+// We do NOT disable browser filters anymore because RNNoise runs better alongside basic echo cancellation
 function getAudioConstraints() {
-    const useNoiseTorch = localStorage.getItem('noisetorch') === 'true';
-    // If NoiseTorch is active, disable all browser processing to prevent double-filtering (which cuts off voice)
     return {
-        echoCancellation: !useNoiseTorch,
-        noiseSuppression: !useNoiseTorch,
-        autoGainControl: !useNoiseTorch
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true
     };
 }
 
 noisetorchToggle.checked = isNoiseTorchEnabled;
-if (isNoiseTorchEnabled) {
-    socket.emit('toggle-noisetorch', true, (res) => {
-        if (!res.success) console.error("Auto-load NoiseTorch failed:", res.message);
-    });
-}
 
 noisetorchToggle.addEventListener('change', (e) => {
     const enable = e.target.checked;
-    noisetorchToggle.disabled = true; // Disable briefly to prevent spam
+    localStorage.setItem('noisetorch', enable);
     
-    socket.emit('toggle-noisetorch', enable, (res) => {
-        noisetorchToggle.disabled = false;
-        if (res.success) {
-            localStorage.setItem('noisetorch', enable);
-            // Restart mic test if it is running to pick up the new constraints and virtual device
-            if (micTestStream) {
-                stopMicTest();
-                setTimeout(toggleMicTest, 500); 
-            }
-        } else {
-            alert('Failed to toggle NoiseTorch: ' + res.message);
-            noisetorchToggle.checked = !enable; // Revert switch
-        }
-    });
+    // Restart mic test if it is running
+    if (micTestStream) {
+        stopMicTest();
+        setTimeout(toggleMicTest, 500); 
+    }
+    
+    // If in a room, we should ideally re-process the stream, but for simplicity we rely on next join
 });
+
+// Audio Processing setup
+async function setupAudioProcessing(rawStream) {
+    const useNoiseTorch = localStorage.getItem('noisetorch') === 'true';
+    if (!useNoiseTorch) return rawStream;
+
+    try {
+        if (!audioContext) {
+            audioContext = new AudioContext({ sampleRate: 48000 });
+            rnnoiseWasmBinary = await loadRnnoise({ 
+                url: '/node_modules/@sapphi-red/web-noise-suppressor/dist/rnnoise.wasm',
+                simdUrl: '/node_modules/@sapphi-red/web-noise-suppressor/dist/rnnoise_simd.wasm'
+            });
+            await audioContext.audioWorklet.addModule('/node_modules/@sapphi-red/web-noise-suppressor/dist/rnnoise/workletProcessor.js');
+        }
+
+        const source = audioContext.createMediaStreamSource(rawStream);
+        const rnnoise = new RnnoiseWorkletNode(audioContext, {
+            wasmBinary: rnnoiseWasmBinary,
+            maxChannels: 1
+        });
+        const destination = audioContext.createMediaStreamDestination();
+
+        source.connect(rnnoise);
+        rnnoise.connect(destination);
+
+        // Merge processed audio with raw video
+        const processedAudioTracks = destination.stream.getAudioTracks();
+        const videoTracks = rawStream.getVideoTracks();
+        
+        return new MediaStream([...videoTracks, ...processedAudioTracks]);
+    } catch (e) {
+        console.error("Failed to setup in-app RNNoise processing:", e);
+        return rawStream; // fallback
+    }
+}
 
 // Mic Test Logic
 let micTestStream = null;
@@ -70,7 +98,8 @@ const settingsModal = document.getElementById('settingsModal');
 async function toggleMicTest() {
     if (!micTestStream) {
         try {
-            micTestStream = await navigator.mediaDevices.getUserMedia({ audio: getAudioConstraints() });
+            const rawStream = await navigator.mediaDevices.getUserMedia({ audio: getAudioConstraints() });
+            micTestStream = await setupAudioProcessing(rawStream);
             micTestAudio.srcObject = micTestStream;
             micTestBtn.textContent = 'Stop Mic Test';
             micTestBtn.classList.remove('btn-outline-primary');
@@ -197,18 +226,18 @@ document.getElementById('join-room-btn').addEventListener('click', () => {
 });
 
 async function joinRoom(roomId, password, roomName) {
+    let rawStream;
     try {
-        localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: getAudioConstraints() });
+        rawStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: getAudioConstraints() });
     } catch (err) {
         console.error('Failed to get local stream', err);
         
-        // Versuche Fallback: Nur Audio oder nur Video, falls eins von beiden fehlt
         try {
             console.log("Trying fallback to video only or audio only...");
-            localStream = await navigator.mediaDevices.getUserMedia({ video: true }).catch(() => null) 
+            rawStream = await navigator.mediaDevices.getUserMedia({ video: true }).catch(() => null) 
                           || await navigator.mediaDevices.getUserMedia({ audio: getAudioConstraints() }).catch(() => null);
             
-            if (!localStream) throw new Error(err.message + " (Fallback also failed)");
+            if (!rawStream) throw new Error(err.message + " (Fallback also failed)");
             
             alert(`Warning: Could only access partial media. Some devices might be missing.\nOriginal error: ${err.name} - ${err.message}`);
         } catch (fallbackErr) {
@@ -216,6 +245,8 @@ async function joinRoom(roomId, password, roomName) {
             return;
         }
     }
+
+    localStream = await setupAudioProcessing(rawStream);
 
     socket.emit('join-room', { roomId, password }, (res) => {
         if (res.success) {
