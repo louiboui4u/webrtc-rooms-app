@@ -15,6 +15,7 @@ function startServerAndWindow() {
 
     // Räume speichern
     const rooms = {};
+    const users = {}; // socket.id -> username
 
     function getPublicRooms() {
         return Object.values(rooms).map(r => ({
@@ -27,6 +28,10 @@ function startServerAndWindow() {
 
     io.on('connection', (socket) => {
         socket.emit('update-rooms', getPublicRooms());
+
+        socket.on('set-username', (username) => {
+            users[socket.id] = username;
+        });
 
         socket.on('create-room', ({ name, password }, callback) => {
             const roomId = 'room_' + Math.random().toString(36).substring(2, 11);
@@ -49,9 +54,14 @@ function startServerAndWindow() {
             room.users.add(socket.id);
             socket.roomId = roomId;
 
-            callback({ success: true, users: Array.from(room.users).filter(id => id !== socket.id) });
+            // Liste aller anderen User im Raum inkl. deren Namen
+            const otherUsers = Array.from(room.users)
+                                    .filter(id => id !== socket.id)
+                                    .map(id => ({ id, username: users[id] || 'Unknown' }));
 
-            socket.to(roomId).emit('user-connected', socket.id);
+            callback({ success: true, users: otherUsers });
+
+            socket.to(roomId).emit('user-connected', { id: socket.id, username: users[socket.id] || 'Unknown' });
             io.emit('update-rooms', getPublicRooms());
         });
 
@@ -75,6 +85,7 @@ function startServerAndWindow() {
                 if (rooms[roomId].users.size === 0) delete rooms[roomId];
                 io.emit('update-rooms', getPublicRooms());
             }
+            delete users[socket.id];
         });
 
         socket.on('offer', ({ target, caller, sdp }) => socket.to(target).emit('offer', { caller, sdp }));

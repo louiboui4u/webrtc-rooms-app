@@ -10,12 +10,37 @@ const currentRoomName = document.getElementById('current-room-name');
 // Modals
 const createRoomModal = new bootstrap.Modal(document.getElementById('createRoomModal'));
 const passwordModal = new bootstrap.Modal(document.getElementById('passwordModal'));
+const usernameModal = new bootstrap.Modal(document.getElementById('usernameModal'));
 
 // State
 let localStream;
 let peers = {}; // socketId -> RTCPeerConnection
+let peerUsernames = {}; // socketId -> username
 let currentRoomId = null;
 let pendingJoinRoomId = null;
+let currentUsername = localStorage.getItem('username') || '';
+
+// Username Logic
+if (!currentUsername) {
+    usernameModal.show();
+} else {
+    socket.emit('set-username', currentUsername);
+}
+
+document.getElementById('save-username-btn').addEventListener('click', () => {
+    const name = document.getElementById('username-input').value.trim();
+    if (name) {
+        currentUsername = name;
+        localStorage.setItem('username', name);
+        socket.emit('set-username', name);
+        usernameModal.hide();
+    }
+});
+
+document.getElementById('change-username-btn').addEventListener('click', () => {
+    document.getElementById('username-input').value = currentUsername;
+    usernameModal.show();
+});
 
 // WebRTC Configuration
 const rtcConfig = {
@@ -123,11 +148,12 @@ async function joinRoom(roomId, password, roomName) {
             lobbyView.classList.add('d-none');
             roomView.classList.remove('d-none');
             
-            addVideoStream('local-video', localStream, true);
+            addVideoStream('local-video', localStream, true, currentUsername + ' (You)');
 
             // Connect to existing users
-            res.users.forEach(userId => {
-                callUser(userId);
+            res.users.forEach(user => {
+                peerUsernames[user.id] = user.username;
+                callUser(user.id);
             });
         } else {
             if (pendingJoinRoomId) {
@@ -157,6 +183,7 @@ document.getElementById('leave-room-btn').addEventListener('click', () => {
     
     Object.values(peers).forEach(pc => pc.close());
     peers = {};
+    peerUsernames = {};
     
     videoGrid.innerHTML = '';
     
@@ -177,7 +204,7 @@ function createPeerConnection(targetId) {
 
     // Handle remote tracks
     pc.ontrack = (event) => {
-        addVideoStream(`video-${targetId}`, event.streams[0], false);
+        addVideoStream(`video-${targetId}`, event.streams[0], false, peerUsernames[targetId] || 'Unknown User');
     };
 
     // Handle ICE candidates
@@ -214,8 +241,9 @@ async function callUser(targetId) {
 }
 
 // The new user will call us, we wait for the offer.
-socket.on('user-connected', (userId) => {
-    console.log('User joined room:', userId);
+socket.on('user-connected', (user) => {
+    console.log('User joined room:', user.id);
+    peerUsernames[user.id] = user.username;
 });
 
 socket.on('user-disconnected', (userId) => {
@@ -224,6 +252,7 @@ socket.on('user-disconnected', (userId) => {
     if (peers[userId]) {
         peers[userId].close();
         delete peers[userId];
+        delete peerUsernames[userId];
     }
 });
 
@@ -263,7 +292,7 @@ socket.on('ice-candidate', async ({ sender, candidate }) => {
 
 // --- UI Controls ---
 
-function addVideoStream(id, stream, isLocal) {
+function addVideoStream(id, stream, isLocal, username = '') {
     if (document.getElementById(id)) return; // Prevent duplicates
 
     const container = document.createElement('div');
@@ -280,6 +309,14 @@ function addVideoStream(id, stream, isLocal) {
     }
 
     container.appendChild(video);
+
+    if (username) {
+        const badge = document.createElement('div');
+        badge.className = 'username-badge';
+        badge.textContent = username;
+        container.appendChild(badge);
+    }
+
     videoGrid.appendChild(container);
 }
 

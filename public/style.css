@@ -35,6 +35,20 @@ body, html {
     object-fit: contain; /* Passt das Video ein (mit schwarzen Balken) ohne es abzuschneiden */
 }
 
+.username-badge {
+    position: absolute;
+    bottom: 10px;
+    left: 10px;
+    background: rgba(0, 0, 0, 0.6);
+    color: white;
+    padding: 4px 10px;
+    border-radius: 6px;
+    font-size: 14px;
+    font-weight: 500;
+    pointer-events: none;
+    z-index: 10;
+}
+
 /* Mirror local video */
 #local-video {
     transform: scaleX(-1);
