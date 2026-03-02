@@ -87,12 +87,19 @@
         <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
       </div>
       <div class="modal-body">
-        <div class="form-check form-switch mb-4">
+        <div class="form-check form-switch mb-3">
           <input class="form-check-input" type="checkbox" id="noisetorch-toggle">
           <label class="form-check-label" for="noisetorch-toggle">
             <strong>Enable AI Noise Reduction (RNNoise)</strong><br>
             <small class="text-muted">In-app AI background noise cancellation. Works instantly on any operating system.</small>
           </label>
+        </div>
+        
+        <div class="mb-4">
+            <label for="vad-threshold" class="form-label mb-0"><strong>Voice Activation Threshold (<span id="vad-threshold-val">-50</span> dB)</strong></label>
+            <br>
+            <small class="text-muted">Set the volume level required to open the microphone. Below this, you are fully muted.</small>
+            <input type="range" class="form-range" id="vad-threshold" min="-100" max="0" step="1" value="-50">
         </div>
         <hr>
         <div class="mb-2">

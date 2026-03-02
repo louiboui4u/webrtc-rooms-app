@@ -1,4 +1,4 @@
-import { RnnoiseWorkletNode, loadRnnoise } from '@sapphi-red/web-noise-suppressor';
+import { RnnoiseWorkletNode, NoiseGateWorkletNode, loadRnnoise } from '@sapphi-red/web-noise-suppressor';
 
 const socket = io();
 
@@ -27,9 +27,17 @@ let currentUsername = localStorage.getItem('username') || '';
 
 // Settings
 const noisetorchToggle = document.getElementById('noisetorch-toggle');
-const isNoiseTorchEnabled = localStorage.getItem('noisetorch') === 'true';
+const vadThresholdSlider = document.getElementById('vad-threshold');
+const vadThresholdVal = document.getElementById('vad-threshold-val');
 
-// We do NOT disable browser filters anymore because RNNoise runs better alongside basic echo cancellation
+const isNoiseTorchEnabled = localStorage.getItem('noisetorch') === 'true';
+let currentVadThreshold = parseFloat(localStorage.getItem('vadThreshold')) || -50;
+
+// Initialize UI
+noisetorchToggle.checked = isNoiseTorchEnabled;
+vadThresholdSlider.value = currentVadThreshold;
+vadThresholdVal.textContent = currentVadThreshold;
+
 function getAudioConstraints() {
     return {
         echoCancellation: true,
@@ -37,8 +45,6 @@ function getAudioConstraints() {
         autoGainControl: true
     };
 }
-
-noisetorchToggle.checked = isNoiseTorchEnabled;
 
 noisetorchToggle.addEventListener('change', (e) => {
     const enable = e.target.checked;
@@ -49,14 +55,25 @@ noisetorchToggle.addEventListener('change', (e) => {
         stopMicTest();
         setTimeout(toggleMicTest, 500); 
     }
-    
-    // If in a room, we should ideally re-process the stream, but for simplicity we rely on next join
+});
+
+vadThresholdSlider.addEventListener('input', (e) => {
+    currentVadThreshold = parseFloat(e.target.value);
+    vadThresholdVal.textContent = currentVadThreshold;
+});
+
+vadThresholdSlider.addEventListener('change', (e) => {
+    localStorage.setItem('vadThreshold', currentVadThreshold);
+    // Restart mic test if it is running to apply new gate
+    if (micTestStream) {
+        stopMicTest();
+        setTimeout(toggleMicTest, 500);
+    }
 });
 
 // Audio Processing setup
 async function setupAudioProcessing(rawStream) {
     const useNoiseTorch = localStorage.getItem('noisetorch') === 'true';
-    if (!useNoiseTorch) return rawStream;
 
     try {
         if (!audioContext) {
@@ -66,23 +83,41 @@ async function setupAudioProcessing(rawStream) {
                 simdUrl: '/node_modules/@sapphi-red/web-noise-suppressor/dist/rnnoise_simd.wasm'
             });
             await audioContext.audioWorklet.addModule('/node_modules/@sapphi-red/web-noise-suppressor/dist/rnnoise/workletProcessor.js');
+            await audioContext.audioWorklet.addModule('/node_modules/@sapphi-red/web-noise-suppressor/dist/noiseGate/workletProcessor.js');
         }
 
         const source = audioContext.createMediaStreamSource(rawStream);
-        const rnnoise = new RnnoiseWorkletNode(audioContext, {
-            wasmBinary: rnnoiseWasmBinary,
+        let lastNode = source;
+
+        // Apply RNNoise AI Filtering
+        if (useNoiseTorch) {
+            const rnnoise = new RnnoiseWorkletNode(audioContext, {
+                wasmBinary: rnnoiseWasmBinary,
+                maxChannels: 1
+            });
+            lastNode.connect(rnnoise);
+            lastNode = rnnoise;
+        }
+
+        // Apply Noise Gate (Voice Activation Threshold)
+        // We always apply the gate to cut out low-level noise completely when not speaking.
+        const noiseGate = new NoiseGateWorkletNode(audioContext, {
+            openThreshold: currentVadThreshold,
+            closeThreshold: currentVadThreshold - 5, // Close gate slightly below open threshold to prevent fluttering
+            holdMs: 300, // Hold the gate open for 300ms after speaking stops
             maxChannels: 1
         });
+
+        lastNode.connect(noiseGate);
+        lastNode = noiseGate;
         
-        // RNNoise outputs a single channel (mono). We use a ChannelMergerNode 
+        // RNNoise / Gate might output mono. Use ChannelMergerNode 
         // to split this single channel back to both left and right ears (stereo).
         const merger = audioContext.createChannelMerger(2);
-        rnnoise.connect(merger, 0, 0); // Connect mono to left
-        rnnoise.connect(merger, 0, 1); // Connect mono to right
+        lastNode.connect(merger, 0, 0); // Connect mono to left
+        lastNode.connect(merger, 0, 1); // Connect mono to right
 
         const destination = audioContext.createMediaStreamDestination();
-
-        source.connect(rnnoise);
         merger.connect(destination);
 
         // Merge processed audio with raw video
