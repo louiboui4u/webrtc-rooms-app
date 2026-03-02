@@ -302,3 +302,75 @@ document.getElementById('toggle-video').addEventListener('click', (e) => {
     e.target.classList.toggle('btn-outline-light');
     e.target.classList.toggle('btn-danger');
 });
+
+// --- Screen Share Logic ---
+let screenStream = null;
+
+document.getElementById('share-screen').addEventListener('click', async (e) => {
+    if (!screenStream) {
+        try {
+            screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
+            const screenTrack = screenStream.getVideoTracks()[0];
+            
+            // Replace video track for local video element
+            const localVideo = document.getElementById('local-video');
+            if (localVideo) {
+                // Keep local audio track
+                const audioTracks = localStream.getAudioTracks();
+                const tracks = [screenTrack];
+                if (audioTracks.length > 0) tracks.push(audioTracks[0]);
+                localVideo.srcObject = new MediaStream(tracks);
+            }
+
+            // Replace track for all peers
+            for (let peerId in peers) {
+                const pc = peers[peerId];
+                const sender = pc.getSenders().find(s => s.track && s.track.kind === 'video');
+                if (sender) {
+                    sender.replaceTrack(screenTrack);
+                }
+            }
+            
+            e.target.textContent = 'Stop Sharing';
+            e.target.classList.remove('btn-outline-info');
+            e.target.classList.add('btn-info', 'text-white');
+
+            // Handle native stop sharing button
+            screenTrack.onended = () => {
+                stopScreenShare(e.target);
+            };
+        } catch (err) {
+            console.error('Error sharing screen:', err);
+        }
+    } else {
+        stopScreenShare(e.target);
+    }
+});
+
+function stopScreenShare(button) {
+    if (screenStream) {
+        screenStream.getTracks().forEach(track => track.stop());
+        screenStream = null;
+        
+        const videoTrack = localStream.getVideoTracks()[0];
+        
+        // Revert local video
+        const localVideo = document.getElementById('local-video');
+        if (localVideo) {
+            localVideo.srcObject = localStream;
+        }
+
+        // Revert track for peers
+        for (let peerId in peers) {
+            const pc = peers[peerId];
+            const sender = pc.getSenders().find(s => s.track && s.track.kind === 'video');
+            if (sender && videoTrack) {
+                sender.replaceTrack(videoTrack);
+            }
+        }
+        
+        button.textContent = 'Share Screen';
+        button.classList.remove('btn-info', 'text-white');
+        button.classList.add('btn-outline-info');
+    }
+}
