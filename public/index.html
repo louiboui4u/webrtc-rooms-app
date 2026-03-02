@@ -87,13 +87,20 @@
         <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
       </div>
       <div class="modal-body">
-        <div class="form-check form-switch mb-3">
+        <div class="form-check form-switch mb-4">
           <input class="form-check-input" type="checkbox" id="noisetorch-toggle">
           <label class="form-check-label" for="noisetorch-toggle">
             <strong>Enable NoiseTorch</strong><br>
             <small class="text-muted">AI background noise cancellation (Linux only). It might take a few seconds to load. You may need to rejoin the room if audio stops.</small>
           </label>
         </div>
+        <hr>
+        <div class="mb-2">
+            <strong>Microphone Test</strong><br>
+            <small class="text-muted">Hear yourself to test your microphone and NoiseTorch background cancellation.</small>
+        </div>
+        <button class="btn btn-outline-primary w-100" id="mic-test-btn">Start Mic Test</button>
+        <audio id="mic-test-audio" autoplay hidden></audio>
       </div>
       <div class="modal-footer">
         <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>

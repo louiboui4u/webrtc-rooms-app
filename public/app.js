@@ -46,6 +46,44 @@ noisetorchToggle.addEventListener('change', (e) => {
     });
 });
 
+// Mic Test Logic
+let micTestStream = null;
+const micTestBtn = document.getElementById('mic-test-btn');
+const micTestAudio = document.getElementById('mic-test-audio');
+const settingsModal = document.getElementById('settingsModal');
+
+async function toggleMicTest() {
+    if (!micTestStream) {
+        try {
+            micTestStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            micTestAudio.srcObject = micTestStream;
+            micTestBtn.textContent = 'Stop Mic Test';
+            micTestBtn.classList.remove('btn-outline-primary');
+            micTestBtn.classList.add('btn-danger');
+        } catch (err) {
+            alert('Could not access microphone for testing: ' + err.message);
+        }
+    } else {
+        stopMicTest();
+    }
+}
+
+function stopMicTest() {
+    if (micTestStream) {
+        micTestStream.getTracks().forEach(track => track.stop());
+        micTestStream = null;
+        micTestAudio.srcObject = null;
+        micTestBtn.textContent = 'Start Mic Test';
+        micTestBtn.classList.remove('btn-danger');
+        micTestBtn.classList.add('btn-outline-primary');
+    }
+}
+
+micTestBtn.addEventListener('click', toggleMicTest);
+
+// Stop mic test when settings modal is closed
+settingsModal.addEventListener('hidden.bs.modal', stopMicTest);
+
 // Username Logic
 if (!currentUsername) {
     usernameModal.show();
