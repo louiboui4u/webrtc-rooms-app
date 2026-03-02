@@ -2,15 +2,30 @@
   "name": "webrtc-rooms",
   "version": "1.0.0",
   "description": "",
-  "main": "server.js",
-  "bin": "server.js",
-  "pkg": {
-    "assets": [
-      "public/**/*"
-    ]
-  },
+  "main": "main.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start": "electron .",
+    "build:linux": "electron-builder --linux AppImage",
+    "build:win": "electron-builder --win"
+  },
+  "build": {
+    "appId": "com.louis.webrtcrooms",
+    "productName": "WebRTC Rooms",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "public/**/*",
+      "package.json"
+    ],
+    "linux": {
+      "target": "AppImage",
+      "category": "Network"
+    },
+    "win": {
+      "target": "nsis"
+    }
   },
   "keywords": [],
   "author": "",
@@ -21,6 +36,7 @@
     "socket.io": "^4.8.3"
   },
   "devDependencies": {
-    "pkg": "^5.8.1"
+    "electron": "^40.6.1",
+    "electron-builder": "^26.8.1"
   }
 }
