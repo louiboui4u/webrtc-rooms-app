@@ -1,6 +1,5 @@
 import { RnnoiseWorkletNode, NoiseGateWorkletNode, loadRnnoise } from '@sapphi-red/web-noise-suppressor';
-
-const socket = io();
+import { joinRoom as tryJoinRoom } from 'https://esm.run/trystero/torrent';
 
 // UI Elements
 const lobbyView = document.getElementById('lobby-view');
@@ -16,16 +15,15 @@ const usernameModal = new bootstrap.Modal(document.getElementById('usernameModal
 
 // State
 let localStream;
-let processedStream;
 let audioContext;
 let rnnoiseWasmBinary;
-let peers = {}; // socketId -> RTCPeerConnection
-let peerUsernames = {}; // socketId -> username
+let peerUsernames = {}; // peerId -> username
 let currentRoomId = null;
 let pendingJoinRoomId = null;
 let currentUsername = localStorage.getItem('username') || '';
+let currentCallRoom = null; // Trystero Room instance for the call
 
-// Settings
+// --- Settings ---
 const noisetorchToggle = document.getElementById('noisetorch-toggle');
 const vadThresholdSlider = document.getElementById('vad-threshold');
 const vadThresholdVal = document.getElementById('vad-threshold-val');
@@ -33,7 +31,6 @@ const vadThresholdVal = document.getElementById('vad-threshold-val');
 const isNoiseTorchEnabled = localStorage.getItem('noisetorch') === 'true';
 let currentVadThreshold = parseFloat(localStorage.getItem('vadThreshold')) || -50;
 
-// Initialize UI
 noisetorchToggle.checked = isNoiseTorchEnabled;
 vadThresholdSlider.value = currentVadThreshold;
 vadThresholdVal.textContent = currentVadThreshold;
@@ -47,13 +44,10 @@ function getAudioConstraints() {
 }
 
 noisetorchToggle.addEventListener('change', (e) => {
-    const enable = e.target.checked;
-    localStorage.setItem('noisetorch', enable);
-    
-    // Restart mic test if it is running
+    localStorage.setItem('noisetorch', e.target.checked);
     if (micTestStream) {
         stopMicTest();
-        setTimeout(toggleMicTest, 500); 
+        setTimeout(toggleMicTest, 500);
     }
 });
 
@@ -64,21 +58,20 @@ vadThresholdSlider.addEventListener('input', (e) => {
 
 vadThresholdSlider.addEventListener('change', (e) => {
     localStorage.setItem('vadThreshold', currentVadThreshold);
-    // Restart mic test if it is running to apply new gate
     if (micTestStream) {
         stopMicTest();
         setTimeout(toggleMicTest, 500);
     }
 });
 
-// Audio Processing setup
+// --- Audio Processing pipeline ---
 async function setupAudioProcessing(rawStream) {
     const useNoiseTorch = localStorage.getItem('noisetorch') === 'true';
 
     try {
         if (!audioContext) {
             audioContext = new AudioContext({ sampleRate: 48000 });
-            rnnoiseWasmBinary = await loadRnnoise({ 
+            rnnoiseWasmBinary = await loadRnnoise({
                 url: '/node_modules/@sapphi-red/web-noise-suppressor/dist/rnnoise.wasm',
                 simdUrl: '/node_modules/@sapphi-red/web-noise-suppressor/dist/rnnoise_simd.wasm'
             });
@@ -89,7 +82,6 @@ async function setupAudioProcessing(rawStream) {
         const source = audioContext.createMediaStreamSource(rawStream);
         let lastNode = source;
 
-        // Apply RNNoise AI Filtering
         if (useNoiseTorch) {
             const rnnoise = new RnnoiseWorkletNode(audioContext, {
                 wasmBinary: rnnoiseWasmBinary,
@@ -99,45 +91,39 @@ async function setupAudioProcessing(rawStream) {
             lastNode = rnnoise;
         }
 
-        // Apply Noise Gate (Voice Activation Threshold)
-        // We always apply the gate to cut out low-level noise completely when not speaking.
         const noiseGate = new NoiseGateWorkletNode(audioContext, {
             openThreshold: currentVadThreshold,
-            closeThreshold: currentVadThreshold - 5, // Close gate slightly below open threshold to prevent fluttering
-            holdMs: 300, // Hold the gate open for 300ms after speaking stops
+            closeThreshold: currentVadThreshold - 5,
+            holdMs: 300,
             maxChannels: 1
         });
 
         lastNode.connect(noiseGate);
         lastNode = noiseGate;
         
-        // RNNoise / Gate might output mono. Use ChannelMergerNode 
-        // to split this single channel back to both left and right ears (stereo).
         const merger = audioContext.createChannelMerger(2);
-        lastNode.connect(merger, 0, 0); // Connect mono to left
-        lastNode.connect(merger, 0, 1); // Connect mono to right
+        lastNode.connect(merger, 0, 0); 
+        lastNode.connect(merger, 0, 1); 
 
         const destination = audioContext.createMediaStreamDestination();
         merger.connect(destination);
 
-        // Merge processed audio with raw video
         const processedAudioTracks = destination.stream.getAudioTracks();
         const videoTracks = rawStream.getVideoTracks();
         
         return new MediaStream([...videoTracks, ...processedAudioTracks]);
     } catch (e) {
-        console.error("Failed to setup in-app RNNoise processing:", e);
-        return rawStream; // fallback
+        console.error("Failed to setup audio processing:", e);
+        return rawStream;
     }
 }
 
-// Mic Test Logic
+// --- Mic Test Logic ---
 let micTestStream = null;
 const micTestBtn = document.getElementById('mic-test-btn');
 const micTestAudio = document.getElementById('mic-test-audio');
 const settingsModal = document.getElementById('settingsModal');
 
-// Volume Meter Logic
 let meterAnimationId = null;
 let meterAudioContext = null;
 let meterAnalyser = null;
@@ -146,9 +132,7 @@ const volumeMeter = document.getElementById('volume-meter');
 const currentVolumeVal = document.getElementById('current-volume-val');
 
 function startVolumeMeter(stream) {
-    if (!meterAudioContext) {
-        meterAudioContext = new AudioContext();
-    }
+    if (!meterAudioContext) meterAudioContext = new AudioContext();
     meterAnalyser = meterAudioContext.createAnalyser();
     meterAnalyser.fftSize = 512;
     meterAnalyser.smoothingTimeConstant = 0.5;
@@ -160,32 +144,19 @@ function startVolumeMeter(stream) {
 
     function updateMeter() {
         if (!meterAnalyser) return;
-        
         meterAnalyser.getFloatTimeDomainData(dataArray);
-        
         let sumSquares = 0.0;
-        for (const amplitude of dataArray) {
-            sumSquares += amplitude * amplitude;
-        }
-        
+        for (const amplitude of dataArray) sumSquares += amplitude * amplitude;
         const rms = Math.sqrt(sumSquares / dataArray.length);
         
-        // Calculate dB, fallback to -100 if silence
         let volumeDb = 20 * Math.log10(rms);
-        if (!isFinite(volumeDb) || volumeDb < -100) {
-            volumeDb = -100;
-        }
-        
-        // Clamp to 0
+        if (!isFinite(volumeDb) || volumeDb < -100) volumeDb = -100;
         if (volumeDb > 0) volumeDb = 0;
 
         currentVolumeVal.textContent = Math.round(volumeDb);
-
-        // Convert dB to percentage for the progress bar (from -100 to 0)
         const percent = Math.max(0, 100 + volumeDb);
         volumeMeter.style.width = percent + '%';
 
-        // Change color based on threshold
         if (volumeDb >= currentVadThreshold) {
             volumeMeter.classList.remove('bg-secondary');
             volumeMeter.classList.add('bg-success');
@@ -196,7 +167,6 @@ function startVolumeMeter(stream) {
 
         meterAnimationId = requestAnimationFrame(updateMeter);
     }
-
     updateMeter();
 }
 
@@ -217,23 +187,18 @@ function stopVolumeMeter() {
     currentVolumeVal.textContent = '-100';
 }
 
-
 async function toggleMicTest() {
     if (!micTestStream) {
         try {
             const rawStream = await navigator.mediaDevices.getUserMedia({ audio: getAudioConstraints() });
-            
-            // Start meter on the RAW stream so the user can configure the gate accurately 
-            // BEFORE the gate mutes them.
             startVolumeMeter(rawStream);
-
             micTestStream = await setupAudioProcessing(rawStream);
             micTestAudio.srcObject = micTestStream;
             micTestBtn.textContent = 'Stop Mic Test';
             micTestBtn.classList.remove('btn-outline-primary');
             micTestBtn.classList.add('btn-danger');
         } catch (err) {
-            alert('Could not access microphone for testing: ' + err.message);
+            alert('Could not access microphone: ' + err.message);
         }
     } else {
         stopMicTest();
@@ -253,15 +218,12 @@ function stopMicTest() {
 }
 
 micTestBtn.addEventListener('click', toggleMicTest);
-
-// Stop mic test when settings modal is closed
 settingsModal.addEventListener('hidden.bs.modal', stopMicTest);
 
-// Username Logic
+
+// --- Username Logic ---
 if (!currentUsername) {
     usernameModal.show();
-} else {
-    socket.emit('set-username', currentUsername);
 }
 
 document.getElementById('save-username-btn').addEventListener('click', () => {
@@ -269,7 +231,6 @@ document.getElementById('save-username-btn').addEventListener('click', () => {
     if (name) {
         currentUsername = name;
         localStorage.setItem('username', name);
-        socket.emit('set-username', name);
         usernameModal.hide();
     }
 });
@@ -279,18 +240,24 @@ document.getElementById('change-username-btn').addEventListener('click', () => {
     usernameModal.show();
 });
 
-// WebRTC Configuration
-const rtcConfig = {
-    iceServers: [
-        { urls: 'stun:stun.l.google.com:19302' },
-        { urls: 'stun:stun1.l.google.com:19302' }
-    ]
-};
+// --- Decentralized Global Lobby ---
+const APP_ID = 'webrtc-rooms-louis-v1';
+const globalLobby = tryJoinRoom({ appId: APP_ID }, 'global-lobby');
+const [sendRooms, getRooms] = globalLobby.makeAction('rooms');
 
-// --- Lobby Logic ---
+let activeRooms = {}; // { roomId: { id, name, hasPassword } }
+let knownRoomsByPeer = {}; // { peerId: { roomId: { ... } } }
 
-socket.on('update-rooms', (rooms) => {
+function updateLobbyUI() {
     roomList.innerHTML = '';
+    const allRoomsMap = { ...activeRooms };
+    
+    Object.values(knownRoomsByPeer).forEach(peerRooms => {
+        Object.assign(allRoomsMap, peerRooms);
+    });
+    
+    const rooms = Object.values(allRoomsMap);
+
     if (rooms.length === 0) {
         roomList.innerHTML = '<div class="col-12 text-center text-muted mt-5"><h5>No rooms available. Be the first to create one!</h5></div>';
         return;
@@ -309,121 +276,172 @@ socket.on('update-rooms', (rooms) => {
                         </span>
                     </h5>
                     <p class="card-text text-muted mb-0 mt-3">
-                        <small>👥 ${room.userCount} participant(s)</small>
+                        <small>🟢 Click to join</small>
                     </p>
                 </div>
             </div>
         `;
         roomList.appendChild(card);
     });
+}
+
+function broadcastMyRooms(targetPeer = null) {
+    if (Object.keys(activeRooms).length > 0) {
+        sendRooms(activeRooms, targetPeer);
+    }
+}
+
+globalLobby.onPeerJoin(peerId => {
+    broadcastMyRooms(peerId);
 });
 
+globalLobby.onPeerLeave(peerId => {
+    delete knownRoomsByPeer[peerId];
+    updateLobbyUI();
+});
+
+getRooms((rooms, peerId) => {
+    knownRoomsByPeer[peerId] = rooms;
+    updateLobbyUI();
+});
+
+// Initial render
+updateLobbyUI();
+
+// --- Room Creation & Joining ---
 document.getElementById('create-room-btn').addEventListener('click', () => {
+    if(!currentUsername) {
+        alert("Please set your name first.");
+        createRoomModal.hide();
+        usernameModal.show();
+        return;
+    }
+
     const name = document.getElementById('new-room-name').value.trim();
     const password = document.getElementById('new-room-password').value;
     
     if (!name) return alert('Room name is required');
 
-    socket.emit('create-room', { name, password }, (res) => {
-        if (res.success) {
-            createRoomModal.hide();
-            // Clear inputs for next time
-            document.getElementById('new-room-name').value = '';
-            document.getElementById('new-room-password').value = '';
-            
-            joinRoom(res.roomId, password, name);
-        }
-    });
+    const roomId = 'room_' + Math.random().toString(36).substring(2, 11);
+    
+    createRoomModal.hide();
+    document.getElementById('new-room-name').value = '';
+    document.getElementById('new-room-password').value = '';
+    
+    joinVideoRoom(roomId, password, name);
 });
 
 window.attemptJoinRoom = (roomId, hasPassword, roomName) => {
+    if(!currentUsername) {
+        alert("Please set your name first.");
+        usernameModal.show();
+        return;
+    }
+
     if (hasPassword) {
         pendingJoinRoomId = roomId;
         document.getElementById('join-room-password').value = '';
-        document.getElementById('password-error').classList.add('d-none');
         document.getElementById('passwordModal').querySelector('.modal-title').textContent = `Join "${roomName}"`;
         passwordModal.show();
     } else {
-        joinRoom(roomId, null, roomName);
+        joinVideoRoom(roomId, null, roomName);
     }
 };
 
 document.getElementById('join-room-btn').addEventListener('click', () => {
     const password = document.getElementById('join-room-password').value;
     const roomName = document.getElementById('passwordModal').querySelector('.modal-title').textContent.replace('Join "', '').replace('"', '');
-    joinRoom(pendingJoinRoomId, password, roomName);
+    passwordModal.hide();
+    joinVideoRoom(pendingJoinRoomId, password, roomName);
 });
 
-async function joinRoom(roomId, password, roomName) {
+// --- WebRTC Video Room Logic (Powered by Trystero) ---
+let sendNameMeta, getNameMeta;
+
+async function joinVideoRoom(roomId, password, roomName) {
     let rawStream;
     try {
         rawStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: getAudioConstraints() });
     } catch (err) {
-        console.error('Failed to get local stream', err);
-        
         try {
-            console.log("Trying fallback to video only or audio only...");
             rawStream = await navigator.mediaDevices.getUserMedia({ video: true }).catch(() => null) 
                           || await navigator.mediaDevices.getUserMedia({ audio: getAudioConstraints() }).catch(() => null);
-            
-            if (!rawStream) throw new Error(err.message + " (Fallback also failed)");
-            
-            alert(`Warning: Could only access partial media. Some devices might be missing.\nOriginal error: ${err.name} - ${err.message}`);
+            if (!rawStream) throw new Error(err.message);
+            alert(`Warning: Could only access partial media.\nError: ${err.message}`);
         } catch (fallbackErr) {
-            alert(`Could not access camera/microphone.\nError: ${err.name} - ${err.message}\nEnsure your devices are plugged in and not used by another app.`);
+            alert(`Could not access camera/microphone.\nEnsure your devices are plugged in.`);
             return;
         }
     }
 
     localStream = await setupAudioProcessing(rawStream);
 
-    socket.emit('join-room', { roomId, password }, (res) => {
-        if (res.success) {
-            if (pendingJoinRoomId) passwordModal.hide();
-            
-            currentRoomId = roomId;
-            currentRoomName.textContent = roomName;
-            
-            lobbyView.classList.add('d-none');
-            roomView.classList.remove('d-none');
-            
-            addVideoStream('local-video', localStream, true, currentUsername + ' (You)');
+    // Join room via Trystero
+    const roomConfig = { appId: APP_ID };
+    if (password) roomConfig.password = password; // Trystero uses this to encrypt WebRTC SDP
+    
+    currentCallRoom = tryJoinRoom(roomConfig, roomId);
+    [sendNameMeta, getNameMeta] = currentCallRoom.makeAction('meta');
 
-            // Connect to existing users
-            res.users.forEach(user => {
-                peerUsernames[user.id] = user.username;
-                callUser(user.id);
-            });
-        } else {
-            if (pendingJoinRoomId) {
-                const errDiv = document.getElementById('password-error');
-                errDiv.textContent = res.message;
-                errDiv.classList.remove('d-none');
-            } else {
-                alert(res.message);
-                // Clean up local stream if failed to join
-                if(localStream) {
-                    localStream.getTracks().forEach(track => track.stop());
-                }
-            }
-        }
+    // Broadcast that we are keeping this room alive to the global lobby
+    activeRooms[roomId] = { id: roomId, name: roomName, hasPassword: !!password };
+    broadcastMyRooms();
+    updateLobbyUI();
+
+    currentRoomId = roomId;
+    currentRoomName.textContent = roomName;
+    
+    lobbyView.classList.add('d-none');
+    roomView.classList.remove('d-none');
+    
+    addVideoStream('local-video', localStream, true, currentUsername + ' (You)');
+
+    // Listen for new peers
+    currentCallRoom.onPeerJoin(peerId => {
+        // Send our local stream to the new peer
+        currentCallRoom.addStream(localStream, peerId);
+        // Send our name to the new peer
+        sendNameMeta({ username: currentUsername }, peerId);
+    });
+
+    // Receive other peers' streams
+    currentCallRoom.onPeerStream((stream, peerId) => {
+        addVideoStream(`video-${peerId}`, stream, false, peerUsernames[peerId] || 'Connecting...');
+    });
+
+    // Receive other peers' usernames
+    getNameMeta((meta, peerId) => {
+        peerUsernames[peerId] = meta.username;
+        // Update badge if video element already exists
+        const badge = document.getElementById(`badge-${peerId}`);
+        if (badge) badge.textContent = meta.username;
+    });
+
+    // Handle peer leaving
+    currentCallRoom.onPeerLeave(peerId => {
+        removeVideoStream(`video-${peerId}`);
+        delete peerUsernames[peerId];
     });
 }
 
-// --- Room & WebRTC Logic ---
-
 document.getElementById('leave-room-btn').addEventListener('click', () => {
-    socket.emit('leave-room');
-    
-    // Cleanup
-    if (localStream) {
-        localStream.getTracks().forEach(track => track.stop());
+    if (currentCallRoom) {
+        currentCallRoom.leave();
+        currentCallRoom = null;
     }
     
-    Object.values(peers).forEach(pc => pc.close());
-    peers = {};
-    peerUsernames = {};
+    if (localStream) {
+        localStream.getTracks().forEach(track => track.stop());
+        localStream = null;
+    }
     
+    if (currentRoomId) {
+        delete activeRooms[currentRoomId];
+        broadcastMyRooms();
+        updateLobbyUI();
+    }
+
+    peerUsernames = {};
     videoGrid.innerHTML = '';
     
     roomView.classList.add('d-none');
@@ -432,107 +450,9 @@ document.getElementById('leave-room-btn').addEventListener('click', () => {
     pendingJoinRoomId = null;
 });
 
-function createPeerConnection(targetId) {
-    const pc = new RTCPeerConnection(rtcConfig);
-    peers[targetId] = pc;
-
-    // Add local tracks
-    localStream.getTracks().forEach(track => {
-        pc.addTrack(track, localStream);
-    });
-
-    // Handle remote tracks
-    pc.ontrack = (event) => {
-        addVideoStream(`video-${targetId}`, event.streams[0], false, peerUsernames[targetId] || 'Unknown User');
-    };
-
-    // Handle ICE candidates
-    pc.onicecandidate = (event) => {
-        if (event.candidate) {
-            socket.emit('ice-candidate', { target: targetId, candidate: event.candidate });
-        }
-    };
-
-    // Handle disconnects
-    pc.oniceconnectionstatechange = () => {
-        if (pc.iceConnectionState === 'disconnected' || pc.iceConnectionState === 'failed' || pc.iceConnectionState === 'closed') {
-            removeVideoStream(`video-${targetId}`);
-            if (peers[targetId]) {
-                peers[targetId].close();
-                delete peers[targetId];
-            }
-        }
-    };
-
-    return pc;
-}
-
-async function callUser(targetId) {
-    const pc = createPeerConnection(targetId);
-    
-    try {
-        const offer = await pc.createOffer();
-        await pc.setLocalDescription(offer);
-        socket.emit('offer', { target: targetId, caller: socket.id, sdp: offer });
-    } catch(e) {
-        console.error("Error creating offer:", e);
-    }
-}
-
-// The new user will call us, we wait for the offer.
-socket.on('user-connected', (user) => {
-    console.log('User joined room:', user.id);
-    peerUsernames[user.id] = user.username;
-});
-
-socket.on('user-disconnected', (userId) => {
-    console.log('User left room:', userId);
-    removeVideoStream(`video-${userId}`);
-    if (peers[userId]) {
-        peers[userId].close();
-        delete peers[userId];
-        delete peerUsernames[userId];
-    }
-});
-
-socket.on('offer', async ({ caller, sdp }) => {
-    const pc = createPeerConnection(caller);
-    try {
-        await pc.setRemoteDescription(new RTCSessionDescription(sdp));
-        const answer = await pc.createAnswer();
-        await pc.setLocalDescription(answer);
-        socket.emit('answer', { target: caller, caller: socket.id, sdp: answer });
-    } catch(e) {
-        console.error("Error handling offer:", e);
-    }
-});
-
-socket.on('answer', async ({ caller, sdp }) => {
-    const pc = peers[caller];
-    if (pc) {
-        try {
-            await pc.setRemoteDescription(new RTCSessionDescription(sdp));
-        } catch(e) {
-            console.error("Error setting remote description from answer:", e);
-        }
-    }
-});
-
-socket.on('ice-candidate', async ({ sender, candidate }) => {
-    const pc = peers[sender];
-    if (pc) {
-        try {
-            await pc.addIceCandidate(new RTCIceCandidate(candidate));
-        } catch (e) {
-            console.error('Error adding received ice candidate', e);
-        }
-    }
-});
-
 // --- UI Controls ---
-
 function addVideoStream(id, stream, isLocal, username = '') {
-    if (document.getElementById(id)) return; // Prevent duplicates
+    if (document.getElementById(id)) return;
 
     const container = document.createElement('div');
     container.className = 'video-container';
@@ -544,26 +464,23 @@ function addVideoStream(id, stream, isLocal, username = '') {
     video.autoplay = true;
     video.playsInline = true;
     if (isLocal) {
-        video.muted = true; // Mute local video to prevent echo feedback
+        video.muted = true;
     }
 
     container.appendChild(video);
 
-    if (username) {
-        const badge = document.createElement('div');
-        badge.className = 'username-badge';
-        badge.textContent = username;
-        container.appendChild(badge);
-    }
+    const badge = document.createElement('div');
+    badge.className = 'username-badge';
+    badge.id = `badge-${id.replace('video-', '')}`;
+    badge.textContent = username;
+    container.appendChild(badge);
 
     videoGrid.appendChild(container);
 }
 
 function removeVideoStream(id) {
     const container = document.getElementById(`container-${id}`);
-    if (container) {
-        container.remove();
-    }
+    if (container) container.remove();
 }
 
 let audioEnabled = true;
@@ -572,9 +489,7 @@ let videoEnabled = true;
 document.getElementById('toggle-audio').addEventListener('click', (e) => {
     audioEnabled = !audioEnabled;
     const audioTrack = localStream.getAudioTracks()[0];
-    if(audioTrack) {
-        audioTrack.enabled = audioEnabled;
-    }
+    if(audioTrack) audioTrack.enabled = audioEnabled;
     e.target.textContent = audioEnabled ? 'Mute Audio' : 'Unmute Audio';
     e.target.classList.toggle('btn-outline-light');
     e.target.classList.toggle('btn-danger');
@@ -583,9 +498,7 @@ document.getElementById('toggle-audio').addEventListener('click', (e) => {
 document.getElementById('toggle-video').addEventListener('click', (e) => {
     videoEnabled = !videoEnabled;
     const videoTrack = localStream.getVideoTracks()[0];
-    if(videoTrack) {
-        videoTrack.enabled = videoEnabled;
-    }
+    if(videoTrack) videoTrack.enabled = videoEnabled;
     e.target.textContent = videoEnabled ? 'Stop Video' : 'Start Video';
     e.target.classList.toggle('btn-outline-light');
     e.target.classList.toggle('btn-danger');
@@ -595,38 +508,32 @@ document.getElementById('toggle-video').addEventListener('click', (e) => {
 let screenStream = null;
 
 document.getElementById('share-screen').addEventListener('click', async (e) => {
-    if (!screenStream) {
+    if (!screenStream && currentCallRoom) {
         try {
             screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
             const screenTrack = screenStream.getVideoTracks()[0];
             
-            // Replace video track for local video element
             const localVideo = document.getElementById('local-video');
             if (localVideo) {
-                // Keep local audio track
                 const audioTracks = localStream.getAudioTracks();
                 const tracks = [screenTrack];
                 if (audioTracks.length > 0) tracks.push(audioTracks[0]);
                 localVideo.srcObject = new MediaStream(tracks);
             }
 
-            // Replace track for all peers
-            for (let peerId in peers) {
-                const pc = peers[peerId];
-                const sender = pc.getSenders().find(s => s.track && s.track.kind === 'video');
-                if (sender) {
-                    sender.replaceTrack(screenTrack);
-                }
+            // Replace track via Trystero
+            const oldVideoTrack = localStream.getVideoTracks()[0];
+            if (oldVideoTrack) {
+                currentCallRoom.replaceTrack(oldVideoTrack, screenTrack);
+            } else {
+                currentCallRoom.addTrack(screenTrack, localStream);
             }
             
             e.target.textContent = 'Stop Sharing';
             e.target.classList.remove('btn-outline-info');
             e.target.classList.add('btn-info', 'text-white');
 
-            // Handle native stop sharing button
-            screenTrack.onended = () => {
-                stopScreenShare(e.target);
-            };
+            screenTrack.onended = () => stopScreenShare(e.target);
         } catch (err) {
             console.error('Error sharing screen:', err);
         }
@@ -636,25 +543,18 @@ document.getElementById('share-screen').addEventListener('click', async (e) => {
 });
 
 function stopScreenShare(button) {
-    if (screenStream) {
+    if (screenStream && currentCallRoom) {
+        const screenTrack = screenStream.getVideoTracks()[0];
         screenStream.getTracks().forEach(track => track.stop());
         screenStream = null;
         
         const videoTrack = localStream.getVideoTracks()[0];
         
-        // Revert local video
         const localVideo = document.getElementById('local-video');
-        if (localVideo) {
-            localVideo.srcObject = localStream;
-        }
+        if (localVideo) localVideo.srcObject = localStream;
 
-        // Revert track for peers
-        for (let peerId in peers) {
-            const pc = peers[peerId];
-            const sender = pc.getSenders().find(s => s.track && s.track.kind === 'video');
-            if (sender && videoTrack) {
-                sender.replaceTrack(videoTrack);
-            }
+        if (videoTrack && screenTrack) {
+            currentCallRoom.replaceTrack(screenTrack, videoTrack);
         }
         
         button.textContent = 'Share Screen';

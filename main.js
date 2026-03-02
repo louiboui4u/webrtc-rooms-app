@@ -2,98 +2,15 @@ const { app, BrowserWindow, session, desktopCapturer } = require('electron');
 const path = require('path');
 const express = require('express');
 const http = require('http');
-const socketIo = require('socket.io');
-const { exec } = require('child_process');
 
 let mainWindow;
 
 function startServerAndWindow() {
     const expressApp = express();
     const server = http.createServer(expressApp);
-    const io = socketIo(server);
 
     expressApp.use(express.static(path.join(__dirname, 'public')));
     expressApp.use('/node_modules', express.static(path.join(__dirname, 'node_modules')));
-
-    // Räume speichern
-    const rooms = {};
-    const users = {}; // socket.id -> username
-
-    function getPublicRooms() {
-        return Object.values(rooms).map(r => ({
-            id: r.id,
-            name: r.name,
-            hasPassword: !!r.password,
-            userCount: r.users.size
-        }));
-    }
-
-    io.on('connection', (socket) => {
-        socket.emit('update-rooms', getPublicRooms());
-
-        socket.on('set-username', (username) => {
-            users[socket.id] = username;
-        });
-
-        socket.on('create-room', ({ name, password }, callback) => {
-            const roomId = 'room_' + Math.random().toString(36).substring(2, 11);
-            rooms[roomId] = {
-                id: roomId,
-                name,
-                password,
-                users: new Set()
-            };
-            io.emit('update-rooms', getPublicRooms());
-            callback({ success: true, roomId });
-        });
-
-        socket.on('join-room', ({ roomId, password }, callback) => {
-            const room = rooms[roomId];
-            if (!room) return callback({ success: false, message: 'Room not found' });
-            if (room.password && room.password !== password) return callback({ success: false, message: 'Invalid password' });
-
-            socket.join(roomId);
-            room.users.add(socket.id);
-            socket.roomId = roomId;
-
-            // Liste aller anderen User im Raum inkl. deren Namen
-            const otherUsers = Array.from(room.users)
-                                    .filter(id => id !== socket.id)
-                                    .map(id => ({ id, username: users[id] || 'Unknown' }));
-
-            callback({ success: true, users: otherUsers });
-
-            socket.to(roomId).emit('user-connected', { id: socket.id, username: users[socket.id] || 'Unknown' });
-            io.emit('update-rooms', getPublicRooms());
-        });
-
-        socket.on('leave-room', () => {
-            if (socket.roomId && rooms[socket.roomId]) {
-                const roomId = socket.roomId;
-                rooms[roomId].users.delete(socket.id);
-                socket.leave(roomId);
-                socket.to(roomId).emit('user-disconnected', socket.id);
-                if (rooms[roomId].users.size === 0) delete rooms[roomId];
-                socket.roomId = null;
-                io.emit('update-rooms', getPublicRooms());
-            }
-        });
-
-        socket.on('disconnect', () => {
-            if (socket.roomId && rooms[socket.roomId]) {
-                const roomId = socket.roomId;
-                rooms[roomId].users.delete(socket.id);
-                socket.to(roomId).emit('user-disconnected', socket.id);
-                if (rooms[roomId].users.size === 0) delete rooms[roomId];
-                io.emit('update-rooms', getPublicRooms());
-            }
-            delete users[socket.id];
-        });
-
-        socket.on('offer', ({ target, caller, sdp }) => socket.to(target).emit('offer', { caller, sdp }));
-        socket.on('answer', ({ target, caller, sdp }) => socket.to(target).emit('answer', { caller, sdp }));
-        socket.on('ice-candidate', ({ target, candidate }) => socket.to(target).emit('ice-candidate', { sender: socket.id, candidate }));
-    });
 
     // Wir lassen das System dynamisch einen freien Port finden
     server.listen(0, '127.0.0.1', () => {
