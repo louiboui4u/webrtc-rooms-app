@@ -24,6 +24,16 @@ let currentUsername = localStorage.getItem('username') || '';
 const noisetorchToggle = document.getElementById('noisetorch-toggle');
 const isNoiseTorchEnabled = localStorage.getItem('noisetorch') === 'true';
 
+function getAudioConstraints() {
+    const useNoiseTorch = localStorage.getItem('noisetorch') === 'true';
+    // If NoiseTorch is active, disable all browser processing to prevent double-filtering (which cuts off voice)
+    return {
+        echoCancellation: !useNoiseTorch,
+        noiseSuppression: !useNoiseTorch,
+        autoGainControl: !useNoiseTorch
+    };
+}
+
 noisetorchToggle.checked = isNoiseTorchEnabled;
 if (isNoiseTorchEnabled) {
     socket.emit('toggle-noisetorch', true, (res) => {
@@ -39,6 +49,11 @@ noisetorchToggle.addEventListener('change', (e) => {
         noisetorchToggle.disabled = false;
         if (res.success) {
             localStorage.setItem('noisetorch', enable);
+            // Restart mic test if it is running to pick up the new constraints and virtual device
+            if (micTestStream) {
+                stopMicTest();
+                setTimeout(toggleMicTest, 500); 
+            }
         } else {
             alert('Failed to toggle NoiseTorch: ' + res.message);
             noisetorchToggle.checked = !enable; // Revert switch
@@ -55,7 +70,7 @@ const settingsModal = document.getElementById('settingsModal');
 async function toggleMicTest() {
     if (!micTestStream) {
         try {
-            micTestStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            micTestStream = await navigator.mediaDevices.getUserMedia({ audio: getAudioConstraints() });
             micTestAudio.srcObject = micTestStream;
             micTestBtn.textContent = 'Stop Mic Test';
             micTestBtn.classList.remove('btn-outline-primary');
@@ -183,7 +198,7 @@ document.getElementById('join-room-btn').addEventListener('click', () => {
 
 async function joinRoom(roomId, password, roomName) {
     try {
-        localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+        localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: getAudioConstraints() });
     } catch (err) {
         console.error('Failed to get local stream', err);
         
@@ -191,7 +206,7 @@ async function joinRoom(roomId, password, roomName) {
         try {
             console.log("Trying fallback to video only or audio only...");
             localStream = await navigator.mediaDevices.getUserMedia({ video: true }).catch(() => null) 
-                          || await navigator.mediaDevices.getUserMedia({ audio: true }).catch(() => null);
+                          || await navigator.mediaDevices.getUserMedia({ audio: getAudioConstraints() }).catch(() => null);
             
             if (!localStream) throw new Error(err.message + " (Fallback also failed)");
             
