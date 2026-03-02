@@ -100,6 +100,10 @@
             <br>
             <small class="text-muted">Set the volume level required to open the microphone. Below this, you are fully muted.</small>
             <input type="range" class="form-range" id="vad-threshold" min="-100" max="0" step="1" value="-50">
+            <div class="progress mt-2" style="height: 10px; background-color: #333;">
+              <div id="volume-meter" class="progress-bar bg-success" role="progressbar" style="width: 0%; transition: width 0.1s;" aria-valuenow="0" aria-valuemin="-100" aria-valuemax="0"></div>
+            </div>
+            <small class="text-muted" style="font-size: 0.7em;">Current Volume: <span id="current-volume-val">-100</span> dB</small>
         </div>
         <hr>
         <div class="mb-2">

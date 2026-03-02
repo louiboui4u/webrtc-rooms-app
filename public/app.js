@@ -137,10 +137,96 @@ const micTestBtn = document.getElementById('mic-test-btn');
 const micTestAudio = document.getElementById('mic-test-audio');
 const settingsModal = document.getElementById('settingsModal');
 
+// Volume Meter Logic
+let meterAnimationId = null;
+let meterAudioContext = null;
+let meterAnalyser = null;
+let meterSource = null;
+const volumeMeter = document.getElementById('volume-meter');
+const currentVolumeVal = document.getElementById('current-volume-val');
+
+function startVolumeMeter(stream) {
+    if (!meterAudioContext) {
+        meterAudioContext = new AudioContext();
+    }
+    meterAnalyser = meterAudioContext.createAnalyser();
+    meterAnalyser.fftSize = 512;
+    meterAnalyser.smoothingTimeConstant = 0.5;
+    
+    meterSource = meterAudioContext.createMediaStreamSource(stream);
+    meterSource.connect(meterAnalyser);
+
+    const dataArray = new Float32Array(meterAnalyser.fftSize);
+
+    function updateMeter() {
+        if (!meterAnalyser) return;
+        
+        meterAnalyser.getFloatTimeDomainData(dataArray);
+        
+        let sumSquares = 0.0;
+        for (const amplitude of dataArray) {
+            sumSquares += amplitude * amplitude;
+        }
+        
+        const rms = Math.sqrt(sumSquares / dataArray.length);
+        
+        // Calculate dB, fallback to -100 if silence
+        let volumeDb = 20 * Math.log10(rms);
+        if (!isFinite(volumeDb) || volumeDb < -100) {
+            volumeDb = -100;
+        }
+        
+        // Clamp to 0
+        if (volumeDb > 0) volumeDb = 0;
+
+        currentVolumeVal.textContent = Math.round(volumeDb);
+
+        // Convert dB to percentage for the progress bar (from -100 to 0)
+        const percent = Math.max(0, 100 + volumeDb);
+        volumeMeter.style.width = percent + '%';
+
+        // Change color based on threshold
+        if (volumeDb >= currentVadThreshold) {
+            volumeMeter.classList.remove('bg-secondary');
+            volumeMeter.classList.add('bg-success');
+        } else {
+            volumeMeter.classList.remove('bg-success');
+            volumeMeter.classList.add('bg-secondary');
+        }
+
+        meterAnimationId = requestAnimationFrame(updateMeter);
+    }
+
+    updateMeter();
+}
+
+function stopVolumeMeter() {
+    if (meterAnimationId) {
+        cancelAnimationFrame(meterAnimationId);
+        meterAnimationId = null;
+    }
+    if (meterSource) {
+        meterSource.disconnect();
+        meterSource = null;
+    }
+    if (meterAnalyser) {
+        meterAnalyser.disconnect();
+        meterAnalyser = null;
+    }
+    volumeMeter.style.width = '0%';
+    currentVolumeVal.textContent = '-100';
+}
+
+
 async function toggleMicTest() {
     if (!micTestStream) {
         try {
             const rawStream = await navigator.mediaDevices.getUserMedia({ audio: getAudioConstraints() });
+            
+            // Start meter on the RAW stream so the user can configure the gate accurately 
+            // BEFORE the gate mutes them.
+            startVolumeMeter(rawStream);
+
             micTestStream = await setupAudioProcessing(rawStream);
             micTestAudio.srcObject = micTestStream;
             micTestBtn.textContent = 'Stop Mic Test';
@@ -155,6 +241,7 @@ async function toggleMicTest() {
 }
 
 function stopMicTest() {
+    stopVolumeMeter();
     if (micTestStream) {
         micTestStream.getTracks().forEach(track => track.stop());
         micTestStream = null;
